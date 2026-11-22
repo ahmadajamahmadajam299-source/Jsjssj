@@ -1,0 +1,58 @@
+name: Build
+on:
+  workflow_dispatch:
+  push:
+    paths: ["ajam-family.zip"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack project
+        run: unzip -q -o ajam-family.zip -d project
+      - name: Prepare database
+        if: env.SUPABASE_ACCESS_TOKEN != ''
+        working-directory: project
+        run: bash scripts/apply_schema.sh ygrimztemhbdzsjecoue
+      - name: Warn if token missing
+        if: env.SUPABASE_ACCESS_TOKEN == ''
+        run: echo "::warning::SUPABASE_ACCESS_TOKEN secret missing - database was NOT prepared"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+      - name: Signing key
+        run: |
+          mkdir -p signing
+          if [ ! -f signing/ajam.jks ]; then
+            keytool -genkeypair -keystore signing/ajam.jks -alias ajam -keyalg RSA -keysize 2048 \
+              -validity 36500 -storepass ajamfamily -keypass ajamfamily -dname "CN=Ajam Family"
+          fi
+          cp signing/ajam.jks project/ajam.jks
+          printf "storeFile=ajam.jks\nstorePassword=ajamfamily\nkeyAlias=ajam\nkeyPassword=ajamfamily\n" > project/keystore.properties
+      - name: Keep signing key in the private repo
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add signing/ajam.jks
+          git diff --cached --quiet || (git commit -m "Add signing key" && git push)
+      - name: Build APK
+        working-directory: project
+        run: gradle assembleRelease --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ajam-family-apk
+          path: project/app/build/outputs/apk/release/app-release.apk
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v0.1-${{ github.run_number }}" project/app/build/outputs/apk/release/app-release.apk \
+            --title "عائلة العجم v0.1-${{ github.run_number }}" --notes "Phase 1: identity, family, chat"
